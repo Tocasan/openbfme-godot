@@ -26,7 +26,6 @@
 #include "GameLogic/Module/SpecialPowerModules.h"
 #include "GameLogic/Object/Contain/OpenContainRuntime.h"
 #include "GameLogic/Object/Contain/TransportContainRuntime.h"
-#include "GameLogic/Object/Contain/HordeContainRuntime.h"
 #include "Common/Team.h"
 #include "GameLogic/WeaponSetToggle.h"
 #include "GameLogic/Module/CastleModules.h"
@@ -76,6 +75,7 @@ ButtonState buildAvailability(CanMakeType make, bool &commandPointsShort)
 	switch (make)
 	{
 		case CANMAKE_OK: return ButtonState::Enabled;
+		case CANMAKE_NO_PREREQUISITES: return ButtonState::ExtraDisabled; // availability 4: prerequisite/build restriction (RW 0x942733.md)
 		case CANMAKE_NO_MONEY: return ButtonState::CantAfford;
 		case CANMAKE_UNKNOWN_7:
 			// RW 0x942F42: result 7 is availability 7, drawn as _cantAfford (RW 0x943C51 -> 0x943C46), not hidden by HIDE_WHILE_DISABLED
@@ -158,7 +158,7 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj, bool &comm
 			}
 			if (isPlayer)
 			{
-				return ButtonState::Restricted;
+				return ButtonState::Restricted; // RW_0x942733.md: a missing NeededUpgrade restricts (0), not availability 4
 			}
 			if (const ThingTemplate *tt = b.getThingTemplate())
 			{
@@ -172,7 +172,7 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj, bool &comm
 		}
 		if (restricted)
 		{
-			return ButtonState::Restricted;
+			return ButtonState::Restricted; // RW_0x942733.md: a missing NeededUpgrade restricts (0), not availability 4
 		}
 	}
 	ProductionUpdateInterface *pu = obj.getProductionUpdate();
@@ -204,7 +204,7 @@ ButtonState ControlBar::evaluate(const CommandButton &b, Object &obj, bool &comm
 			}
 			if (!BuildAssistant::playerCanBuild(*player, tt, m_ctx.logic))
 			{
-				return ButtonState::Restricted;
+				return ButtonState::ExtraDisabled; // availability 4: the level/prerequisite build gate
 			}
 			const CanMakeType make = BuildAssistant::canMakeUnit(obj, tt, -1);
 			if (make == CANMAKE_UNKNOWN_7 && b.m_command != GUI_COMMAND_UNIT_BUILD)
@@ -858,12 +858,6 @@ void ControlBar::update()
 							}
 						}
 					}
-					// owner report 2026-11-12: a unit already in the queue keeps the queued look (bluish border / light layer), not the dark
-					// population-limit disabled look. The evaluate() gate above may have returned Restricted for a full population.
-					if (cb.queued > 0 && cb.state == ButtonState::Restricted)
-					{
-						cb.state = ButtonState::NotReady;
-					}
 				}
 				// Upgrade buttons share the production queue's progress with unit buttons. Availability
 				// remains Purchased while researching; it does not mean the research is complete.
@@ -958,7 +952,7 @@ bool ControlBar::reviveButton(ControlBarButton &cb, int n, Player &player, Objec
 	}
 	if (producer.isEffectivelyDead() || !BuildAssistant::playerAllowedToBuild(player, list.templateAt(m_ctx.logic, n), m_ctx.logic))
 	{
-		cb.state = ButtonState::Restricted;
+		cb.state = ButtonState::ExtraDisabled; // availability 4: the level/prerequisite build gate
 		return true;
 	}
 	const CanMakeType make = BuildAssistant::canMakeUnit(producer, nullptr, n);
@@ -1045,17 +1039,6 @@ void ControlBar::doTransportInventoryUI(Object &obj)
 		if (!rider || current > last)
 		{
 			continue;
-		}
-		// Owner report 2026-11-11: the tunnel network lists a horde as soon as the first soldier enters. Its icon (and the
-		// exit button) must wait until every member is inside, otherwise invoking it from another tunnel cancels the entry.
-		if (rider->isKindOfName("HORDE"))
-		{
-			ContainModuleInterface *hordeContain = rider->getContain();
-			HordeContainInterface *horde = hordeContain ? hordeContain->getHordeContainInterface() : nullptr;
-			if (horde && !horde->allMembersEntered())
-			{
-				continue;
-			}
 		}
 		const std::string image = templateButtonImage(rider->getTemplate());
 		const int n = TransportContain::transportSlotCount(*rider);
@@ -1290,7 +1273,8 @@ std::vector<std::string> ControlBar::acceptanceStops()
 		"Stop / the SET_STANCE slots, reached by hotkey); the stance toggle's radial sub-menu is ported on the Palantir arc (lane CAMPUI-1): S-3803",
 		"[S-290] command availability RW 0x942733 is partial: common script / disabled / rank / model-condition gates, NeededUpgrade, hero availability and "
 		"special-power science / status, deferred model-mask and paused-progress gates are ported; unresolved receiver state, command-center substitution, special-power substitution / trigger chains and "
-		"the remaining command-specific branches are documented in docs/re/rotwk/RW_0x942733.md; availability 4/7 still use Restricted",
+		"the remaining command-specific branches are documented in docs/re/rotwk/RW_0x942733.md; availability 4 is ported as ExtraDisabled for the build gate and "
+		"availability 7 uses CantAfford (the hero HUD's 4/7 presentation remains Restricted, S-850)",
 		"[S-1990] FIRE_WEAPON buttons (lane FACT-B: the archers' and siege engines' Bombard, the explosive mine's Deploy, the Mumakil's Charge): RotWK's "
 		"availability (RW 0x942733 case 0x17: the weapon of WeaponSlot and its clip) and press (RW 0x940435 case 0x17: MSG_DO_WEAPON with WeaponSlot and "
 		"MaxShotsToFire, a targeted one through the GUI command's issueFireWeaponCommand) are not ported, nor the logic's MSG_DO_WEAPON / _AT_LOCATION / "
@@ -1311,7 +1295,7 @@ std::vector<std::string> ControlBar::acceptanceStops()
 		"[S-5040] another player's command set (lane OWNERFIX-3): evaluateContextUI (RW 0x71EBDA) and updateContextCommand (RW 0x94397F) are ported: the bar "
 		"shows the set of a selected object the local player does not control, every availability but hidden turned to disabled while the local player is "
 		"active (RW 0x6AAC52), no clock, glow or count; an observer sees the real availability; INFERENCE: presses of such a set (left, right, hotkey) send "
-		"nothing (retail's logic refuses a non-owner's command; its disabled windows take no left press); availability 4 is not told apart from 0 (S-290); "
+		"nothing (retail's logic refuses a non-owner's command; its disabled windows take no left press); availability 4 is not told apart from 0 in a foreign view (S-290); "
 		"a disabled Palantir button's image is drawn in greyscale with the bubbles' luminance weights (RotWK's RenderImage callback not read)",
 		"[S-3801] under-construction context (lane PLAY-4, evaluateContextUI RW 0x71EBDA -> populateUnderConstruction RW 0x944EFB): a structure whose GettingBuiltBehavior "
 		"rebuilds it or has + 0x36 set while UNDER_CONSTRUCTION (+ 0x36 alone when not), or with the model condition BASE_BUILD, shows only Command_CancelConstruction "

@@ -167,9 +167,6 @@ bool AptView3DViewers::create(Slot &slot, const AptCanvasOp &op)
 	slot.inst = memnew(W3DInstancer);
 	slot.instId = slot.inst->get_instance_id();
 	slot.black->add_child(slot.inst);
-	// owner report 2026-11-10: the menu's View3D fade showed the W3D pivot-dither as an image disintegration at startup;
-	// keep opaque pivots at 1 for the first two seconds (the same warm-up the game world uses).
-	W3D_Set_Fade_Warmup((uint64_t)Time::get_singleton()->get_ticks_msec() + 2000);
 	const Dictionary setup = slot.inst->setup(m_fs);
 	if (!bool(setup.get("ok", false)))
 	{

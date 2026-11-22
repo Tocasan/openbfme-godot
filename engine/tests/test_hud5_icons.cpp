@@ -25,6 +25,7 @@
 #include "GameLogic/Module/BehaviorModule.h"
 #include "GameLogic/Object/ExperienceTracker.h"
 #include "GameLogic/Object/Object.h"
+#include "GameLogic/Object/ObjectGeometry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -210,7 +211,7 @@ TEST_CASE("hud5 icons retail: a newly produced unit's construction sentinel has 
 		if (op.kind == IconUIOp::TEXT)
 		{
 			++texts;
-			CHECK(op.text == "Building: 0%");
+			CHECK(op.text.find("0%") != std::string::npos); // locale-independent: the install's UnderConstructionDesc
 		}
 	}
 	CHECK(texts == 1);
@@ -275,6 +276,68 @@ TEST_CASE("hud5 icons retail: a structure's health bar when selected or under th
 	CHECK(unit[3].color == 0xFF0C9C24u); // RW 0xC11048 (12 156 36)
 }
 
+// RW 0x68DF5B reads Object + 0xB8, the object's own GeometryInfo: a GeometryUpgrade changes the active shapes and the health box with them (the owner's
+// 2026-11-21 "some health bars are the wrong size for the unit or structure"). The template's cached values are the object's until a shape flag changes.
+TEST_CASE("hud5 icons retail: a geometry upgrade's active shapes size the object's health box")
+{
+	if (!haveWorld("hud5 icons own geometry"))
+	{
+		return;
+	}
+	IconRig r(shared());
+	Object *b = r.place("GondorArcherRange", r.rig.local, 700.0f, 700.0f);
+	r.rig.game->advance(0.2);
+	r.look(*b);
+	auto widthOf = [&]() -> float {
+		const std::vector<IconUIOp> ops = IconRig::of(r.build({ b->getID() }, 0), b->getID());
+		REQUIRE(!ops.empty());
+		REQUIRE(ops[0].kind == IconUIOp::OPEN_RECT);
+		return ops[0].w - 6.0f;
+	};
+	auto expected = [&]() -> float {
+		PathfindGeometry g;
+		ObjectGeometry::fillPathfindGeometry(b->geometryShapes(), g);
+		const float half = std::min(std::max(g.boundingCircleRadius() * 1.5f, 20.0f), 150.0f);
+		return std::max(half * 2.0f, 20.0f);
+	};
+	const float orig = widthOf();
+	CHECK(orig == doctest::Approx(expected()).epsilon(0.02));
+	// Geom_V1 / Geom_V2 add the wider walls and the tower; the structure starts on Geom_Orig alone
+	b->setGeometryActive("Geom_V1", true);
+	b->setGeometryActive("Geom_V2", true);
+	const float wide = widthOf();
+	CHECK(wide == doctest::Approx(expected()).epsilon(0.02));
+	CHECK(wide > orig);
+	b->setGeometryActive("Geom_V1", false);
+	b->setGeometryActive("Geom_V2", false);
+	CHECK(widthOf() == doctest::Approx(orig).epsilon(0.02));
+}
+
+// RW 0xAD1920's second walk: a shape with GeometryUsedForHealthBox = No (the fortresses' HighTowerGeom) is left out of the health box's anchor height
+TEST_CASE("hud5 icons retail: GeometryUsedForHealthBox = No leaves the high tower out of the bar's anchor")
+{
+	if (!haveWorld("hud5 icons health box geometry"))
+	{
+		return;
+	}
+	IconRig r(shared());
+	Object *b = r.place("MenFortress", r.rig.local, 800.0f, 800.0f);
+	r.rig.game->advance(0.2);
+	r.look(*b);
+	auto top = [&]() -> float {
+		const std::vector<IconUIOp> ops = IconRig::of(r.build({ b->getID() }, 0), b->getID());
+		REQUIRE(!ops.empty());
+		REQUIRE(ops[0].kind == IconUIOp::OPEN_RECT);
+		return ops[0].y;
+	};
+	const float withTower = top();
+	b->setGeometryActive("HighTowerGeom", false);
+	const float withoutTower = top();
+	CHECK(withTower == doctest::Approx(withoutTower).epsilon(0.01));
+	b->setGeometryActive("HighTowerGeom", true);
+	CHECK(top() == doctest::Approx(withTower).epsilon(0.01));
+}
+
 // RW 0x671FD5: a building under construction has the building frames and four rows blended from RW 0xC10EA8 (blue) to RW 0xC10EE8 (cyan) by its health ratio
 TEST_CASE("hud5 icons retail: a construction's health bar: the building frames and the blue-to-cyan rows of RW 0x670FA0")
 {
@@ -309,7 +372,7 @@ TEST_CASE("hud5 icons retail: a construction's health bar: the building frames a
 	CHECK(ops[6].y == ops[3].y + 3.0f);
 }
 
-TEST_CASE("hud5 icons retail: health bars only on selection or hover; a selected horde shows each soldier's bar, AllHealthBars widens the kinds")
+TEST_CASE("hud5 icons retail: health bars only on selection or hover; AllHealthBars lets a selected horde's soldiers have them, never all the time")
 {
 	if (!haveWorld("hud5 icons bar visibility"))
 	{
@@ -345,39 +408,9 @@ TEST_CASE("hud5 icons retail: health bars only on selection or hover; a selected
 		CHECK(bars({}, 0) == 0); // nothing selected, nothing under the mouse: no bar at all
 		CHECK(bars({ hero->getID() }, 0) == 1); // a hero: its bar with or without the option
 		CHECK(bars({}, hero->getID()) == 1);
-		CHECK(bars({ h->getID() }, 0) == (int)soldiers.size()); // owner report: each selected horde soldier's bar (INFANTRY included)
-		CHECK(bars({}, soldiers[0]) == 1); // and the soldier under the mouse
+		CHECK(bars({ h->getID() }, 0) == (all ? (int)soldiers.size() : 0)); // the selected horde's soldiers (INFANTRY) only with AllHealthBars
+		CHECK(bars({}, soldiers[0]) == (all ? 1 : 0));
 	}
-}
-
-
-TEST_CASE("hud5 icons retail: a damaged unit in sight shows its bar without selection; a full-health one does not (owner report 2026-11-12)")
-{
-	if (!haveWorld("hud5 icons bar damaged"))
-	{
-		return;
-	}
-	IconRig r(shared());
-	Player *enemy = r.rig.game->players().findPlayerWithName("Player_2");
-	REQUIRE(enemy != nullptr);
-	Object *e = r.place("GondorFighter", enemy, 900.0f, 900.0f);
-	for (int i = 0; i < 5; ++i)
-	{
-		r.rig.game->advance(0.2);
-	}
-	r.look(*e);
-	auto bars = [&]() {
-		int n = 0;
-		for (const IconUIOp &op : r.build({}, 0))
-		{
-			n += op.kind == IconUIOp::OPEN_RECT && op.color == 0x7F000000u ? 1 : 0;
-		}
-		return n;
-	};
-	CHECK(bars() == 0); // full health, not selected, not under the mouse: no bar
-	REQUIRE(e->getBodyModule() != nullptr);
-	e->getBodyModule()->setInitialHealth(50); // 50%: damaged
-	CHECK(bars() == 1);
 }
 
 TEST_CASE("zoom1 health bars: the OpenBFME Always mode shows every unit's and building's bar, own and enemy, infantry, cavalry, heroes, without selection")
@@ -686,4 +719,28 @@ TEST_CASE("hud5 icons: the acceptance stops are reported")
 	REQUIRE(stops.size() == 2);
 	CHECK(stops[0].rfind("[S-1950]", 0) == 0);
 	CHECK(stops[1].rfind("[S-1951]", 0) == 0);
+}
+
+TEST_CASE("hud5 icons retail: a complete WALL_UPGRADE shows its bar; an under-construction one does not (WallUpgradeUpdate proxy)")
+{
+	if (!haveWorld("hud5 icons wall upgrade"))
+	{
+		return;
+	}
+	IconRig r(shared());
+	Object *w = r.place("GondorCastleUpgrade", r.rig.local, 700.0f, 700.0f);
+	r.rig.game->advance(0.2);
+	r.look(*w);
+	REQUIRE(w->isKindOfName("WALL_UPGRADE"));
+	auto bars = [&]() {
+		int n = 0;
+		for (const IconUIOp &op : IconRig::of(r.build({ w->getID() }, 0), w->getID()))
+		{
+			n += op.kind == IconUIOp::OPEN_RECT && op.color == 0x7F000000u ? 1 : 0;
+		}
+		return n;
+	};
+	CHECK(bars() == 1); // complete/living: the port's proxy for WallUpgradeUpdate active
+	w->setStatus(OBJECT_STATUS_UNDER_CONSTRUCTION, true);
+	CHECK(bars() == 0); // under construction: no bar
 }

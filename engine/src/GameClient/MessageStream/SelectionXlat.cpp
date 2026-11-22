@@ -495,43 +495,7 @@ MessageDisposition SelectionTranslator::translate(const ClientMessage &msg)
 			}
 			else
 			{
-				// the mouseover hint for the command translator and the cursor
-				Object *under = HudObjects::pickForHover(m_ctx, pixel); // RW 0x83CC13
-				if (under && (!HudObjects::isEffectivelyDead(*under) || under->isKindOfName("ALWAYS_SELECTABLE")))
-				{
-					// owner report 2026-11-13: the tooltip and the health bar follow the soldier under the cursor, not always the horde's first member.
-					// The command hint keeps the horde (retail's promoted drawable); the UI's mouseover gets the raw member when the pick returns one of it.
-					Object *member = HudObjects::pickObject(m_ctx, pixel, HudObjects::pickTypesForContext(m_ctx, true), false);
-					const bool isMember = member && member != under && member->getContainedBy() == under;
-					m_ctx.ui.setMouseover(isMember ? member->getID() : under->getID());
-					m_ctx.stream.append(CMSG_MOUSEOVER_DRAWABLE_HINT).appendObjectID(under->getID());
-				}
-				else
-				{
-					Coord3D position;
-					if (m_ctx.view.screenToTerrain(pixel, m_ctx.logic, position))
-					{
-						m_ctx.ui.setMouseoverLocation(position);
-						m_ctx.stream.append(CMSG_MOUSEOVER_LOCATION_HINT).appendLocation(position);
-					}
-				}
-				// lane BUILD-5: createMouseoverHint's cursor (RW 0x69F637, BFME2 decomp InGameUICreateMouseoverHint.cpp:511): nothing while scrolling or
-				// selecting; in a mouse mode (a placement) the mode's cursor (Target)
-				if (m_ctx.ui.isScrolling() || m_ctx.ui.isSelecting())
-				{
-				}
-				else if (m_ctx.ui.mouseMode() != 0)
-				{
-					m_ctx.ui.setCursor(m_ctx.ui.mouseModeCursor());
-				}
-				else
-				{
-					m_ctx.ui.setCursor(MouseCursorName::Arrow);
-					if (under && m_ctx.ui.getGUICommand() == nullptr && HudObjects::canSelect(m_ctx, *under, false) && !under->isKindOfName("SHRUBBERY"))
-					{
-						m_ctx.ui.setCursor(MouseCursorName::Select);
-					}
-				}
+				updateHover(pixel);
 			}
 			break;
 		}
@@ -582,14 +546,7 @@ MessageDisposition SelectionTranslator::translate(const ClientMessage &msg)
 				// a waiting ATTACK_MOVE (type 10) is not cancelled here (GUICommandTranslator's click roles own it, 0x004314B1) and takes the
 				// no-command branch: the standard mouse setup deselects
 				const CommandButton *command = m_ctx.ui.getGUICommand();
-				if (command && command->m_command == GUI_COMMAND_BLOODTHIRSTY)
-				{
-					// owner report 2026-11-10: the right button must not cancel the sacrifice targeting (that then became a move order);
-					// the left click carries it out, as CommandXlat's context targeting expects.
-					disp = MessageDisposition::Destroy;
-					m_ctx.ui.setScrolling(false);
-				}
-				else if (command && command->m_command != GUI_COMMAND_ATTACK_MOVE)
+				if (command && command->m_command != GUI_COMMAND_ATTACK_MOVE)
 				{
 					// cancel the GUI command mode without deselecting
 					m_ctx.ui.setGUICommand(nullptr);
@@ -739,4 +696,52 @@ MessageDisposition SelectionTranslator::translate(const ClientMessage &msg)
 		m_leftDown = false;
 	}
 	return disp;
+}
+
+// lane HOVER-1: the pointer's object, health bar, help and cursor follow the world under a still pointer. The mouseover hint goes to the command
+// translator, whose createCommandHint then sets its cursor after the base Arrow / Select below (retail's order, RW 0x6A3B77 after RW 0x69F637).
+void SelectionTranslator::updateHover(const ICoord2D &pixel)
+{
+	// the mouseover hint for the command translator and the cursor
+	Object *under = HudObjects::pickForHover(m_ctx, pixel); // RW 0x83CC13
+	if (under && (!HudObjects::isEffectivelyDead(*under) || under->isKindOfName("ALWAYS_SELECTABLE")))
+	{
+		// owner report 2026-11-13: the tooltip and the health bar follow the soldier under the cursor, not always the horde's first member.
+		// The command hint keeps the horde (retail's promoted drawable); the UI's mouseover gets the raw member when the pick returns one of it.
+		Object *member = HudObjects::pickObject(m_ctx, pixel, HudObjects::pickTypesForContext(m_ctx, true), false);
+		const bool isMember = member && member != under && member->getContainedBy() == under;
+		m_ctx.ui.setMouseover(isMember ? member->getID() : under->getID());
+		m_ctx.stream.append(CMSG_MOUSEOVER_DRAWABLE_HINT).appendObjectID(under->getID());
+	}
+	else
+	{
+		Coord3D position;
+		if (m_ctx.view.screenToTerrain(pixel, m_ctx.logic, position))
+		{
+			m_ctx.ui.setMouseoverLocation(position);
+			m_ctx.stream.append(CMSG_MOUSEOVER_LOCATION_HINT).appendLocation(position);
+		}
+		else
+		{
+			// no object and no terrain under the pointer: the help box and the health bar must not keep the last object
+			m_ctx.ui.setMouseover(INVALID_ID);
+		}
+	}
+	// lane BUILD-5: createMouseoverHint's cursor (RW 0x69F637, BFME2 decomp InGameUICreateMouseoverHint.cpp:511): nothing while scrolling or
+	// selecting; in a mouse mode (a placement) the mode's cursor (Target)
+	if (m_ctx.ui.isScrolling() || m_ctx.ui.isSelecting())
+	{
+	}
+	else if (m_ctx.ui.mouseMode() != 0)
+	{
+		m_ctx.ui.setCursor(m_ctx.ui.mouseModeCursor());
+	}
+	else
+	{
+		m_ctx.ui.setCursor(MouseCursorName::Arrow);
+		if (under && m_ctx.ui.getGUICommand() == nullptr && HudObjects::canSelect(m_ctx, *under, false) && !under->isKindOfName("SHRUBBERY"))
+		{
+			m_ctx.ui.setCursor(MouseCursorName::Select);
+		}
+	}
 }

@@ -714,7 +714,7 @@ void InGameHud::update(double seconds)
 	presentBeacons(); // lane CHAT-1
 	// owner report 2026-11-12: hovering a horde must show the soldier's bar and help, not the horde object's. The pick returns the horde; the
 	// first living member stands for it (the member's own name and health; its rank comes from the horde in UnitHelpSource).
-	ObjectID mouseover = m_input->ui().mouseoverObject();
+	ObjectID mouseover = m_input->ui().getInputEnabled() ? m_input->ui().mouseoverObject() : INVALID_ID;
 	if (Object *ho = m_config.game.logic().findObjectByID(mouseover); ho && ho->isKindOfName("HORDE") && ho->getContain())
 	{
 		if (const ContainModuleInterface::ContainedItemsList *members = ho->getContain()->getContainedItemsList())

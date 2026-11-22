@@ -4202,6 +4202,35 @@ void AptMenuPlayer::render(bool force)
 	std::uint64_t t0 = time->get_ticks_usec();
 	AptRenderList rl;
 	m->A()->buildRenderList(rl);
+	// lane INGAMEBG-2: Background.apt's _show_IG_BG (frame 167) also places BackgroundHide (MenuFrameAndBg.apt: SFE_MenuBkgrnd at _Frame 1) at depth 1
+	// for the 36 frames until frame 203. The port's model at that frame draws an opaque dark cover over the game (the front-end background's hide
+	// state is not transparent here), so the pause / Powers / objectives screens opened over a game showed the rune overlay on a black background for
+	// ~1.2 s and then revealed the battlefield. In mode 2 only the in-game overlay is drawn; the front-end background is already hidden by the call.
+	if (m->shell && m->shell->wm && m->shell->wm->backgroundMode() == 2)
+	{
+		const int backgroundLevel = m->shell->wm->backgroundLevel();
+		rl.commands.erase(std::remove_if(rl.commands.begin(), rl.commands.end(), [backgroundLevel](const AptRenderCommand &c) {
+			return c.level == backgroundLevel && c.kind == AptRenderCommand::Kind::Placeholder && c.renderObject == "SFE_MenuBkgrnd";
+		}), rl.commands.end());
+	}
+	// Non-retail drawing-layer order: the port's levels are Background.apt (1), Palantir.apt (2) and the menus
+	// (QuitMenu/Options, 3+). Retail draws the WindowManager (background + menus) after the in-game HUD, so the
+	// Palantir must be emitted before the background level; otherwise the background is behind the HUD and cannot
+	// cover it. Stable reorder only, no extra Background copy and no colour change.
+	if (m->shell && m->shell->wm)
+	{
+		const int palantirLevel = m->shell->wm->findAptMovieIndex("Palantir.apt");
+		const int backgroundLevel = m->shell->wm->backgroundLevel();
+		if (palantirLevel >= 0 && backgroundLevel >= 0 && palantirLevel != backgroundLevel)
+		{
+			auto rank = [&](const AptRenderCommand &c) {
+				return c.level == palantirLevel ? 0 : (c.level == backgroundLevel ? 1 : 2);
+			};
+			std::stable_sort(rl.commands.begin(), rl.commands.end(), [&](const AptRenderCommand &a, const AptRenderCommand &b) {
+				return rank(a) < rank(b);
+			});
+		}
+	}
 	std::uint64_t t1 = time->get_ticks_usec();
 	// lane CAMP-2: each level's visible commands (a shape, text or native component whose cumulative alpha is not zero)
 	m->levelCommands.clear();
